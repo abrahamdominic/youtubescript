@@ -367,30 +367,37 @@ def show_summary(
     output_dir: Path,
     size_bytes: int = 0,
 ) -> None:
-    """Display the per-source download summary panel."""
-    table = Table.grid(padding=(0, 4))
-    table.add_column(style=DIM, justify="left")
-    table.add_column(style=BRIGHT, justify="right")
-    table.add_column(justify="left")
-    table.add_row("Total Found", str(total), "")
-    table.add_row("Downloaded", str(downloaded), Text(MARK_OK, style=GREEN))
-    table.add_row("Skipped", str(skipped), Text(MARK_SKIP, style=YELLOW))
-    table.add_row("Failed", str(failed), Text(MARK_FAIL, style=RED))
+    """Display the per-source download statistics (ab.md DOWNLOAD SUMMARY).
+
+    Rendered as a compact box matching the layout in ab.md: two-space
+    indent, right-aligned values, a per-stat mark, an optional downloaded
+    size row, and the output folder at the bottom.
+    """
+    grid = Table.grid(padding=(0, 3))
+    grid.add_column(style=DIM, justify="left")
+    grid.add_column(style=BRIGHT, justify="right")
+    grid.add_column(justify="left")
+    grid.add_row("Total Found", str(total), "")
+    grid.add_row("Downloaded", str(downloaded), Text(MARK_OK, style=GREEN))
+    grid.add_row("Skipped", str(skipped), Text(MARK_SKIP, style=YELLOW))
+    grid.add_row("Failed", str(failed), Text(MARK_FAIL, style=RED))
     if size_bytes > 0:
-        table.add_row(
+        grid.add_row(
             "Downloaded Size",
             _fmt_bytes(size_bytes),
             Text(MARK_OK, style=GREEN),
         )
-    table.add_row("", "", "")
-    table.add_row("Output Folder", "", "")
-    table.add_row(Text(str(output_dir), style=CYAN), "", "")
+    grid.add_row("", "", "")
+    grid.add_row("Output Folder", "", "")
+    grid.add_row(Text(str(output_dir), style=CYAN), "", "")
     console.print(
         Panel(
-            table,
-            title=f"[{CYAN}]{label} Download Summary[/]",
+            grid,
+            title=f"[bold cyan]{label} Download Summary[/]",
             border_style=CYAN,
             box=box.ROUNDED,
+            width=54,
+            padding=(1, 2),
         )
     )
     console.print()
@@ -403,45 +410,57 @@ def show_final_screen(
     failed: int,
     size_bytes: int = 0,
 ) -> None:
-    """Show the final success (or warning) screen."""
+    """Show the final success (or warning) screen (ab.md SUCCESS SCREEN).
+
+    Green success box with the check-marked heading and left-indented
+    result lines (matching the ab.md layout); a yellow warning box with
+    the failing count is used instead when any download failed. The total
+    downloaded size (MB/GB) is included when known.
+    """
+    pad = "       "  # left indent matching the ab.md mock-up
     if size_bytes > 0:
-        size_line = Align.center(
-            Text(f"{_fmt_bytes(size_bytes)} downloaded", style=CYAN)
-        )
+        size_line = Text(f"{pad}{_fmt_bytes(size_bytes)} downloaded", style=CYAN)
     else:
-        size_line = None
-    lines = [
-        Align.center(Text(f"{processed} videos processed", style=BRIGHT)),
-        Align.center(Text(f"{downloaded} successfully downloaded", style=GREEN)),
-    ]
-    if skipped:
-        lines.append(Align.center(Text(f"{skipped} already downloaded", style=YELLOW)))
+        size_line = Text("")
     if failed:
-        lines.append(Align.center(Text(f"{failed} failed", style=RED)))
-    if size_line:
-        lines.append(Text())
-        lines.append(size_line)
-    if failed:
+        body: List[Text] = [
+            Text(f"{pad}{MARK_FAIL} DOWNLOAD SESSION COMPLETED WITH ERRORS", style=RED),
+            Text(""),
+            Text(f"{pad}{processed} videos processed", style=BRIGHT),
+            Text(f"{pad}{downloaded} successfully downloaded", style=GREEN),
+        ]
+        if skipped:
+            body.append(Text(f"{pad}{skipped} already downloaded", style=YELLOW))
+        body.append(Text(f"{pad}{failed} failed", style=RED))
+        body.append(size_line)
+        body.append(Text(""))
         console.print(
             Panel(
-                Group(*lines),
-                title="[yellow]\u26a0 DOWNLOAD SESSION COMPLETED WITH ERRORS[/]",
-                subtitle=f"[{DIM}]See the summary above and the failed_downloads.json files[/]",
+                Group(*body),
+                title=f"[yellow]{MARK_FAIL} PROBLEMS DETECTED[/]",
                 border_style="yellow",
                 box=box.ROUNDED,
+                width=54,
                 padding=(1, 2),
             )
         )
     else:
+        body = [
+            Text(f"{pad}{MARK_OK} DOWNLOAD SESSION COMPLETE", style=GREEN),
+            Text(""),
+            Text(f"{pad}{processed} videos processed", style=BRIGHT),
+            Text(f"{pad}{downloaded} successfully downloaded", style=GREEN),
+        ]
+        if skipped:
+            body.append(Text(f"{pad}{skipped} already downloaded", style=YELLOW))
+        body.append(size_line)
+        body.append(Text(""))
         console.print(
             Panel(
-                Group(
-                    Align.center(Text(f"{MARK_OK} DOWNLOAD SESSION COMPLETE", style=GREEN, justify="center")),
-                    Text(),
-                    *lines,
-                ),
+                Group(*body),
                 border_style="green",
                 box=box.ROUNDED,
+                width=54,
                 padding=(1, 2),
             )
         )
