@@ -1950,6 +1950,17 @@ def run_url_download_flow(
     write_json(folder / "failed_downloads.json", [])
     ok_line(f"Download completed: {_trunc(video['title'], 60)}")
     console.print()
+    size_bytes = _safe_file_size(download_file)
+    show_summary(
+        "Link",
+        1,
+        1,
+        0,
+        0,
+        folder,
+        size_bytes=size_bytes,
+    )
+    show_final_screen(1, 1, 0, 0, size_bytes)
     return 0
 
 
