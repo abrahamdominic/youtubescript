@@ -1,8 +1,32 @@
 # NK Keyword Downloader (YouTube + Telegram)
 
 A terminal-based tool that searches **YouTube** and **Telegram** for a keyword,
-downloads the accessible matching media (video, audio, documents, images), and
+downloads the accessible matching media (video, mp3, documents, images), and
 saves per-item JSON metadata — all from a polished, Rich-powered CLI.
+
+## Quick start
+
+Run the **bash script** — it sets up the virtual environment, installs any
+missing dependencies, checks FFmpeg and then starts the tool for you:
+
+```bash
+./auto.sh                 # interactive mode (choose platform & options)
+./auto.sh "Apostle Babs Adewumi"   # direct keyword, still interactive
+```
+
+Make sure the script is executable first:
+
+```bash
+chmod +x auto.sh
+```
+
+In interactive mode you can search by keyword, paste a **YouTube link**, pick a
+platform, choose **Video / mp3 only / Both**, set **mp3 format (MP3/M4A/original)
+and quality**, pick a **video quality (Best → 360p)**, set a **result limit**,
+and choose an **output directory** — then review everything in the download
+summary before starting.
+
+Non-interactive one-shot use (YouTube, first 50 results into `downloads/`):
 
 ```bash
 python media_finder.py "Apostle Babs Adewumi"
@@ -14,13 +38,13 @@ python media_finder.py "Apostle Babs Adewumi"
   (percentage, size, speed, ETA), per-item download cards, summary panels and a
   final success screen.
 - **YouTube source** — searches by keyword and processes the top results. Prefers
-  MP4 up to 1080p (best video + best audio merged when FFmpeg is available) and
+  MP4 up to 1080p (best video + best mp3 merged when FFmpeg is available) and
   3 automatic retries on failure.
-- **`--audio-only` mode** — downloads the best audio stream and converts it to
+- **`--mp3-only` mode** — downloads the best mp3 stream and converts it to
   192 kbps MP3 (requires FFmpeg).
 - **Telegram source** — searches the messages, captions and file names across
   the dialogs your account can access, filters by media type
-  (video / audio / document / image), shows a **Telegram Search** panel with the
+  (video / mp3 / document / image), shows a **Telegram Search** panel with the
   keyword and the number of matches found, and downloads the media.
 - **Duplicate protection & resume** — already-downloaded YouTube videos (by video
   ID) and Telegram media (by `chat_id:message_id`) are always skipped; re-running
@@ -40,8 +64,8 @@ python media_finder.py "Apostle Babs Adewumi"
 ## Requirements
 
 - Python 3.10 or newer
-- [FFmpeg](https://ffmpeg.org) — to merge video/audio streams, produce MP4
-  containers and extract MP3 audio (see below)
+- [FFmpeg](https://ffmpeg.org) — to merge video/mp3 streams, produce MP4
+  containers and extract MP3 mp3 (see below)
 - An internet connection
 - `yt-dlp` (YouTube), `rich` (terminal UI), `Telethon` (Telegram) and
   `python-dotenv` (`.env` loading) — all installed via
@@ -49,11 +73,11 @@ python media_finder.py "Apostle Babs Adewumi"
 
 ### FFmpeg
 
-FFmpeg merges separate video/audio streams into a single MP4 and converts audio
+FFmpeg merges separate video/mp3 streams into a single MP4 and converts mp3
 to MP3. The tool still runs without it, but:
 
 - videos fall back to the best single-stream MP4 (lower quality),
-- `--audio-only` saves the raw audio stream instead of converting to MP3,
+- `--mp3-only` saves the raw mp3 stream instead of converting to MP3,
 - a warning panel is shown at startup.
 
 Install it on your platform:
@@ -131,9 +155,9 @@ or
 python3 -m pip install -r requirements.txt
 ```
 
-> **Prefer automation?** `run.sh` does this for you — it creates the virtual
-> environment if missing and installs every missing dependency (including
-> yt-dlp, rich and Telethon) before running the script:
+> **Prefer automation?** `run.sh` (and `auto.sh`) do this for you — they create
+> the virtual environment if missing and install every missing dependency
+> (including yt-dlp, rich and Telethon) before running the script.
 
 ```bash
 ./run.sh "Apostle Babs Adewumi"
@@ -144,9 +168,16 @@ want to use the Telegram source — YouTube works without it.
 
 ## Basic Usage
 
-Use the `run.sh` launcher — it automatically creates the virtual environment,
-installs any missing dependency (yt-dlp, rich, Telethon, python-dotenv) and then
-runs the main script:
+**Recommended:** run `auto.sh` to start the interactive tool (configure
+platform, media type, quality, limit and output directory, then download):
+
+```bash
+./auto.sh
+```
+
+`run.sh` is the equivalent one-liner launcher for non-interactive runs:
+it automatically creates the virtual environment, installs any missing
+dependency (yt-dlp, rich, Telethon, python-dotenv) and then runs the script:
 
 ```bash
 ./run.sh "Apostle Babs Adewumi"
@@ -199,20 +230,20 @@ Defaults: **50** for YouTube, **20** for Telegram.
 
 ```bash
 python3 media_finder.py "apostle babs" --source telegram --type video
-python3 media_finder.py "apostle babs" --source telegram --type audio
+python3 media_finder.py "apostle babs" --source telegram --type mp3
 python3 media_finder.py "apostle babs" --source telegram --type document
 python3 media_finder.py "apostle babs" --source telegram --type image
 python3 media_finder.py "apostle babs" --source telegram --type all   # default
 ```
 
-## Audio download
+## mp3 download
 
 ```bash
-python3 media_finder.py "apostle babs" --audio-only
+python3 media_finder.py "apostle babs" --mp3-only
 ```
 
-Downloads the best audio stream and converts it to 192 kbps MP3 (requires
-FFmpeg). Without FFmpeg it saves the raw audio stream as-is.
+Downloads the best mp3 stream and converts it to 192 kbps MP3 (requires
+FFmpeg). Without FFmpeg it saves the raw mp3 stream as-is.
 
 ## Custom output directory
 
@@ -232,11 +263,11 @@ The keyword-based folder is created automatically inside the given directory
 --output OUTPUT       Base output directory (default: downloads)
 --source {youtube,telegram,all}
                       Which source to search (default: youtube)
---type {video,audio,document,image,all}
+--type {video,mp3,document,image,all}
                       Telegram media type filter (default: all)
 --yes                 Auto-download all Telegram results without asking
 --format FORMAT       yt-dlp format selector (overrides the automatic choice)
---audio-only          Download audio instead of video
+--mp3-only          Download mp3 instead of video
 ```
 
 ## Output structure
@@ -251,7 +282,7 @@ downloads/
     ├── downloaded.json         Manifest of downloaded video IDs (for resume)
     ├── README.txt              Summary of the run
     └── telegram/               Telegram results
-        ├── videos/  audio/  documents/  images/
+        ├── videos/  mp3/  documents/  images/
         ├── metadata/           1234.json, -100123..._5678.json, ...
         ├── metadata.json       Combined Telegram metadata
         ├── downloaded.json     Manifest of downloaded messages (for resume)
@@ -273,6 +304,8 @@ media_finder.py        Main entry point — CLI, YouTube source, shared Rich
                        UI/JSON/path helpers, FFmpeg detection, summary + logs
 src/telegram.py        Isolated Telegram source: Telethon credentials, auth,
                        search, media classification, downloads and metadata
+auto.sh                Recommended launcher (interactive): creates the venv,
+                       installs missing deps, checks FFmpeg, starts the tool
 run.sh                 Auto-setup launcher: creates the venv, installs any
                        missing dependencies (incl. yt-dlp), then runs the script
 youtube_downloader.py  Compatibility wrapper re-exporting the main CLI
@@ -294,7 +327,7 @@ requirements.txt       Python dependencies
   `python -m pip`.
 - **`ModuleNotFoundError: rich/yt-dlp/Telethon`** — activate your virtual
   environment and run `pip install -r requirements.txt`.
-- **FFmpeg missing** — install it as described above; without it `--audio-only`
+- **FFmpeg missing** — install it as described above; without it `--mp3-only`
   cannot produce MP3 and video quality may be lower.
 - **Telegram credentials error at startup** — copy `.env.example` to `.env` and
   fill in `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` from
@@ -331,3 +364,5 @@ This tool only downloads content you are authorized to download. Respect
 YouTube's Terms of Service, applicable copyright laws and Telegram's terms; do
 not use this tool to download or redistribute content you do not have permission
 to use.
+
+

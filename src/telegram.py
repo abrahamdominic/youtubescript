@@ -51,6 +51,7 @@ show_results_table = _m.show_results_table
 show_summary = _m.show_summary
 _trunc = _m._trunc
 _fmt_bytes = _m._fmt_bytes
+_safe_file_size = _m._safe_file_size
 BRIGHT = _m.BRIGHT
 CYAN = _m.CYAN
 YELLOW = _m.YELLOW
@@ -105,17 +106,17 @@ def _media_type_of(message: Any) -> str:
     if getattr(message, "video", None):
         return "video"
     if getattr(message, "voice", None):
-        return "audio"
-    if getattr(message, "audio", None):
-        return "audio"
+        return "mp3"
+    if getattr(message, "mp3", None):
+        return "mp3"
     if getattr(message, "document", None):
         mime = (
             getattr(getattr(message, "file", None), "mime_type", "") or ""
         ).lower()
         if mime.startswith("video"):
             return "video"
-        if mime.startswith("audio") or mime.startswith("application/ogg"):
-            return "audio"
+        if mime.startswith("mp3") or mime.startswith("application/ogg"):
+            return "mp3"
         return "document"
     return "document"
 
@@ -128,7 +129,7 @@ def _guess_extension(message: Any) -> str:
             return re.sub(r"[^a-z0-9.]", "", ext)
     ext_map = {
         "video": ".mp4",
-        "audio": ".mp3",
+        "mp3": ".mp3",
         "document": ".pdf",
         "image": ".jpg",
     }
@@ -455,6 +456,7 @@ async def _tg_worker(
         processed: List[Dict[str, Any]] = []
         failed: List[Dict[str, Any]] = []
         downloaded_count = skipped_count = failed_count = 0
+        size_bytes = 0
 
         for index, item in enumerate(items, start=1):
             key = f"{item['chat_id']}:{item['message_id']}"
@@ -517,6 +519,7 @@ async def _tg_worker(
                 continue
 
             downloaded_count += 1
+            size_bytes += _safe_file_size(saved_path)
             meta = dict(
                 meta_base, status="downloaded", filename=Path(saved_path).name
             )
@@ -561,6 +564,7 @@ async def _tg_worker(
             skipped_count,
             failed_count,
             tg_dirs["base"],
+            size_bytes=size_bytes,
         )
         return {
             "ok": True,
@@ -568,6 +572,7 @@ async def _tg_worker(
             "skipped": skipped_count,
             "failed": failed_count,
             "total": total,
+            "size_bytes": size_bytes,
         }
     finally:
         try:
