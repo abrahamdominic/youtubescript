@@ -1,8 +1,9 @@
-# NK Keyword Downloader (YouTube + Telegram)
+# NK Keyword Downloader (YouTube + Telegram + TikTok + Facebook)
 
 A terminal-based tool that searches **YouTube** and **Telegram** for a keyword,
-downloads the accessible matching media (video, mp3, documents, images), and
-saves per-item JSON metadata — all from a polished, Rich-powered CLI.
+downloads the accessible matching media (video, mp3, documents, images),
+downloads **TikTok** and **Facebook** videos by direct link, and saves per-item
+JSON metadata — all from a polished, Rich-powered CLI.
 
 ## Quick start
 
@@ -24,7 +25,9 @@ In interactive mode you can search by keyword, paste a **YouTube link**, pick a
 platform, choose **Video / mp3 only / Both**, set **mp3 format (MP3/M4A/original)
 and quality**, pick a **video quality (Best → 360p)**, set a **result limit**,
 and choose an **output directory** — then review everything in the download
-summary before starting.
+summary before starting. TikTok and Facebook videos are downloaded by pasting
+their video URL (either from the platform menu or the auto-detecting
+"Download by Link" option).
 
 Non-interactive one-shot use (YouTube, first 50 results into `downloads/`):
 
@@ -46,12 +49,18 @@ python media_finder.py "Apostle Babs Adewumi"
   the dialogs your account can access, filters by media type
   (video / mp3 / document / image), shows a **Telegram Search** panel with the
   keyword and the number of matches found, and downloads the media.
+- **TikTok / Facebook by link** — paste a video URL (short links like
+  `vm.tiktok.com` and `fb.watch` included) and the best available video + audio
+  is downloaded and merged with FFmpeg, or extracted to mp3 with `--mp3-only`.
 - **Duplicate protection & resume** — already-downloaded YouTube videos (by video
-  ID) and Telegram media (by `chat_id:message_id`) are always skipped; re-running
-  a command resumes without re-downloading completed files.
+  ID), Telegram media (by `chat_id:message_id`) and TikTok/Facebook videos
+  (by video ID) are always skipped; re-running a command resumes without
+  re-downloading completed files.
 - **Per-item JSON metadata** — YouTube: title, URL, video ID, channel, upload
   date, duration, view count, description, thumbnail. Telegram: message ID,
   channel, date, message text, media type, filename, file size.
+  TikTok/Facebook: title, URL, platform, uploader, upload date, duration,
+  file size and download timestamp.
 - **Resilient** — a single failing item never aborts a run; failures are
   collected into `failed_downloads.json` and reported, and the exit code reflects
   the outcome.
@@ -67,8 +76,9 @@ python media_finder.py "Apostle Babs Adewumi"
 - [FFmpeg](https://ffmpeg.org) — to merge video/mp3 streams, produce MP4
   containers and extract MP3 mp3 (see below)
 - An internet connection
-- `yt-dlp` (YouTube), `rich` (terminal UI), `Telethon` (Telegram) and
-  `python-dotenv` (`.env` loading) — all installed via
+- `yt-dlp` (YouTube), `rich` (terminal UI), `Telethon` (Telegram),
+  `python-dotenv` (`.env` loading) and `curl_cffi` (browser impersonation,
+  required by yt-dlp for TikTok/Facebook) — all installed via
   `pip install -r requirements.txt`
 
 ### FFmpeg
@@ -218,6 +228,60 @@ downloading. To download everything without asking:
 python3 media_finder.py "apostle babs" --source telegram --yes
 ```
 
+## Direct-link downloads (TikTok & Facebook)
+
+TikTok and Facebook work by **direct video URL** (no keyword search), using the
+same yt-dlp engine, progress UI, FFmpeg detection, duplicate manifest and
+summary screens as YouTube.
+
+```bash
+# TikTok
+python3 media_finder.py --source tiktok --url "https://www.tiktok.com/@user/video/1234567890123456789"
+python3 media_finder.py --source tiktok --url "https://vm.tiktok.com/..."
+python3 media_finder.py --source tiktok --url "https://vt.tiktok.com/..."
+
+# Facebook
+python3 media_finder.py --source facebook --url "https://www.facebook.com/watch?v=..."
+python3 media_finder.py --source facebook --url "https://www.facebook.com/reel/..."
+python3 media_finder.py --source facebook --url "https://fb.watch/..."
+```
+
+The platform is also detected automatically from the URL, so `--source` can be
+omitted — `--source all` plus a URL behaves the same way:
+
+```bash
+# Auto-detects YouTube / TikTok / Facebook from the URL
+python3 media_finder.py --url "https://vm.tiktok.com/..."
+```
+
+`--mp3-only` works for TikTok/Facebook where the platform provides a separate
+audio stream, and `--format` overrides the automatic quality selection.
+
+### Interactive link workflow
+
+From the main interactive menu you can either:
+
+- pick **TikTok** or **Facebook** directly and paste the video URL, or
+- pick **Download by Link (auto-detect)** and paste any supported URL —
+  the platform is detected automatically.
+
+The pasted URL is validated against the selected platform; a mismatched or
+unsupported URL shows a clear message instead of crashing.
+
+### Platform limitations
+
+- Both TikTok and Facebook are actively rate-limited/threat-blocked and change
+  their pages frequently. They require **`curl_cffi`** so yt-dlp can
+  impersonate a real browser (install with `pip install -r requirements.txt`);
+  without it TikTok fails with an "Unexpected response from webpage request"
+  error. Keep yt-dlp up to date (`pip install -U yt-dlp`). Public videos work
+  when yt-dlp can read them; login-gated, private, bot-challenged or
+  IP-blocked videos are reported as failures with a clear reason.
+- TikTok/Facebook do **not** support keyword search in this tool — they are
+  URL/link downloads only. The **All** menu option therefore searches
+  YouTube + Telegram by keyword.
+- Telegram is a keyword-search source; Telegram links are not downloadable by URL.
+
 ## Limiting results
 
 ```bash
@@ -261,38 +325,56 @@ The keyword-based folder is created automatically inside the given directory
 --limit LIMIT         Maximum number of results to process
                       (default: YouTube 50, Telegram 20)
 --output OUTPUT       Base output directory (default: downloads)
---source {youtube,telegram,all}
-                      Which source to search (default: youtube)
+--source {youtube,telegram,tiktok,facebook,all}
+                      Which source to use (default: youtube). tiktok and
+                      facebook download by direct URL (use with --url)
 --type {video,mp3,document,image,all}
                       Telegram media type filter (default: all)
 --yes                 Auto-download all Telegram results without asking
 --format FORMAT       yt-dlp format selector (overrides the automatic choice)
 --mp3-only          Download mp3 instead of video
+--url URL             Download a single video by URL; the platform is
+                      auto-detected (YouTube/TikTok/Facebook)
+--cookies COOKIES     Path to a Netscape cookies.txt file (bypasses bot checks)
+--cookies-from-browser BROWSER
+                      Extract cookies from browser (chrome, firefox, brave, edge, safari)
 ```
 
 ## Output structure
 
 ```text
 downloads/
-└── Apostle Babs Adewumi/
-    ├── videos/                 Downloaded MP4/MP3 files (YouTube)
-    ├── metadata/               video_001.json, video_002.json, ...
-    ├── metadata.json           Combined metadata for every processed video
-    ├── failed_downloads.json   Details of videos that could not be saved
-    ├── downloaded.json         Manifest of downloaded video IDs (for resume)
-    ├── README.txt              Summary of the run
-    └── telegram/               Telegram results
-        ├── videos/  mp3/  documents/  images/
-        ├── metadata/           1234.json, -100123..._5678.json, ...
-        ├── metadata.json       Combined Telegram metadata
-        ├── downloaded.json     Manifest of downloaded messages (for resume)
-        └── failed_downloads.json
+├── Apostle Babs Adewumi/
+│   ├── videos/                 Downloaded MP4/MP3 files (YouTube)
+│   ├── metadata/               video_001.json, video_002.json, ...
+│   ├── metadata.json           Combined metadata for every processed video
+│   ├── failed_downloads.json   Details of videos that could not be saved
+│   ├── downloaded.json         Manifest of downloaded video IDs (for resume)
+│   ├── README.txt              Summary of the run
+│   └── telegram/               Telegram results
+│       ├── videos/  mp3/  documents/  images/
+│       ├── metadata/           1234.json, -100123..._5678.json, ...
+│       ├── metadata.json       Combined Telegram metadata
+│       ├── downloaded.json     Manifest of downloaded messages (for resume)
+│       └── failed_downloads.json
+├── by-link/                    YouTube links (kept at their original path)
+│   └── <video title>/
+│       ├── videos/  metadata/
+│       ├── metadata.json  downloaded.json  failed_downloads.json
+├── tiktok/                     TikTok links
+│   ├── downloaded.json         Platform manifest (skip duplicates on re-runs)
+│   └── <video title>/
+│       ├── videos/  metadata/
+│       ├── metadata.json  downloaded.json  failed_downloads.json
+└── facebook/                   Facebook links (same layout as tiktok/)
 ```
 
 Telegram files keep the original media filename where available; otherwise a
 safe `ChannelTitle_messageid_Title` name is generated. Telegram metadata per
 item includes: source, keyword, message ID, channel name, date, message text,
-media type, filename and file size.
+media type, filename and file size. TikTok/Facebook metadata per item includes:
+title, URL, platform, uploader, upload date, duration, file size and download
+timestamp.
 
 ## Architecture
 
@@ -304,6 +386,8 @@ media_finder.py        Main entry point — CLI, YouTube source, shared Rich
                        UI/JSON/path helpers, FFmpeg detection, summary + logs
 src/telegram.py        Isolated Telegram source: Telethon credentials, auth,
                        search, media classification, downloads and metadata
+src/link.py            Isolated direct-link source: URL platform detection,
+                       TikTok/Facebook downloads via yt-dlp and their metadata
 auto.sh                Recommended launcher (interactive): creates the venv,
                        installs missing deps, checks FFmpeg, starts the tool
 run.sh                 Auto-setup launcher: creates the venv, installs any
@@ -315,9 +399,13 @@ requirements.txt       Python dependencies
 
 - `src/telegram.py` imports the shared helpers directly from `media_finder`
   (e.g. `console`, `show_results_table`, `build_telegram_dirs`).
-- `media_finder.py` imports `run_telegram_source` **lazily**, only when
-  `--source telegram` or `--source all` is used — so plain YouTube runs never
-  touch Telethon. This keeps the two modules free of import cycles.
+- `src/link.py` imports the shared helpers directly from `media_finder` and
+  owns URL platform detection (`detect_platform`), URL validation, the
+  TikTok/Facebook downloader and their per-platform metadata/manifest.
+- `media_finder.py` imports `run_telegram_source` and the direct-link helpers
+  **lazily**, only when those sources are used — so plain YouTube runs never
+  touch Telethon or the social downloader. This keeps the modules free of
+  import cycles.
 - Telegram search results are shown with a **Telegram Search** panel (keyword +
   "Found N matching messages") followed by the shared results table.
 
@@ -346,23 +434,32 @@ requirements.txt       Python dependencies
   waits the exact time Telegram requests, then resumes automatically.
 - **Age-restricted videos** — YouTube may block these without a signed-in
   session; they are reported as failures.
-- **`Sign in to confirm you're not a bot`** — use a `cookies.txt` file by
-  uncommenting the `"cookiefile"` option in `build_downloader_options()` or see
-  <https://github.com/yt-dlp/yt-dlp#how-do-i-pass-cookies-to-yt-dlp>.
+- **`Sign in to confirm you're not a bot`** — The tool automatically applies
+  anti-bot fallback clients (Android / iOS InnerTube) and JavaScript runtimes to
+  bypass this error. If YouTube still demands authentication for a video or
+  network, you can provide cookies in any of these ways:
+  - Place a `cookies.txt` file in the project directory (automatically detected)
+  - Pass `--cookies /path/to/cookies.txt`
+  - Pass `--cookies-from-browser chrome` (or `firefox`, `brave`, `edge`, `safari`)
+  - Set `COOKIES_FILE=cookies.txt` or `COOKIES_FROM_BROWSER=chrome` in `.env`
+  See <https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies>
+  for tips on exporting YouTube cookies.
 
 ## Updating yt-dlp
 
-yt-dlp changes frequently to keep pace with YouTube, so update it regularly:
+yt-dlp changes frequently to keep pace with YouTube, TikTok and Facebook, so
+update it regularly (keep `curl_cffi` up to date too — it powers the browser
+impersonation that TikTok/Facebook require):
 
 ```bash
-pip install -U yt-dlp
+pip install -U yt-dlp curl_cffi
 ```
 
 ## Legal / copyright notice
 
 This tool only downloads content you are authorized to download. Respect
-YouTube's Terms of Service, applicable copyright laws and Telegram's terms; do
-not use this tool to download or redistribute content you do not have permission
-to use.
+YouTube's Terms of Service, TikTok's and Facebook's terms, applicable
+copyright laws and Telegram's terms; do not use this tool to download or
+redistribute content you do not have permission to use.
 
 

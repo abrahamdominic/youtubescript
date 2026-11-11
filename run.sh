@@ -38,7 +38,7 @@ VENV_PY="$VENV_DIR/bin/python"
 
 # --- Step 2 (README.md): check dependencies, install what is missing ------
 need_install=0
-for module in yt_dlp rich telethon dotenv; do
+for module in yt_dlp rich telethon dotenv curl_cffi; do
     if ! "$VENV_PY" -c "import $module" >/dev/null 2>&1; then
         echo "==> Missing dependency: $module"
         need_install=1

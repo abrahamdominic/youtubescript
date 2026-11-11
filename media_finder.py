@@ -3,7 +3,7 @@
 
 Search YouTube and/or Telegram for media matching a keyword, download the
 accessible matches (video or mp3) and save their metadata straight from
-the terminal.
+the terminal. TikTok and Facebook videos are downloaded by direct URL.
 
 Examples:
     python media_finder.py "Apostle Babs Adewumi"
@@ -13,6 +13,9 @@ Examples:
     python media_finder.py "Apostle Babs Adewumi" --source all
     python media_finder.py "Apostle Babs Adewumi" --mp3-only
     python media_finder.py "Apostle Babs Adewumi" --output ./my-downloads
+    python media_finder.py --source tiktok --url "https://www.tiktok.com/..."
+    python media_finder.py --source facebook --url "https://www.facebook.com/..."
+    python media_finder.py --url "https://vm.tiktok.com/..."
 """
 
 from __future__ import annotations
@@ -75,6 +78,110 @@ def _require_ytdlp() -> None:
         )
 
 
+def strip_ansi(text: str) -> str:
+    """Remove ANSI escape sequences from a string."""
+    return re.sub(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", text or "")
+
+
+def is_bot_challenge_error(error_msg: str) -> bool:
+    """Return True if the error message is a YouTube bot/sign-in challenge."""
+    low = strip_ansi(error_msg).lower()
+    return any(
+        phrase in low
+        for phrase in (
+            "sign in to confirm you're not a bot",
+            "sign in to confirm you’re not a bot",
+            "confirm you're not a bot",
+            "confirm you’re not a bot",
+            "bot verification",
+            "use --cookies-from-browser",
+            "use --cookies",
+        )
+    )
+
+
+def parse_cookies_from_browser(val: str) -> Optional[tuple]:
+    """Parse a browser cookie spec into a yt-dlp compatible tuple."""
+    if not val:
+        return None
+    try:
+        if yt_dlp is not None:
+            res = yt_dlp.parse_options(["--cookies-from-browser", val])
+            return res[1].cookiesfrombrowser
+    except Exception:
+        pass
+    return (val, None, None, None)
+
+
+def resolve_cookie_options(
+    cli_cookiefile: Optional[str] = None,
+    cli_cookies_from_browser: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Resolve cookie options from CLI flags, environment, or default files."""
+    cookie_opts: Dict[str, Any] = {}
+
+    # 1. CLI cookies-from-browser or environment variable
+    browser = cli_cookies_from_browser or os.getenv("COOKIES_FROM_BROWSER")
+    if browser:
+        parsed = parse_cookies_from_browser(browser)
+        if parsed:
+            cookie_opts["cookiesfrombrowser"] = parsed
+            return cookie_opts
+
+    # 2. CLI cookiefile or environment variables
+    cookie_file = (
+        cli_cookiefile
+        or os.getenv("COOKIES_FILE")
+        or os.getenv("YOUTUBE_COOKIES_FILE")
+        or os.getenv("YT_DLP_COOKIES")
+    )
+    if cookie_file:
+        p = Path(cookie_file).expanduser()
+        if p.is_file():
+            cookie_opts["cookiefile"] = str(p.resolve())
+            return cookie_opts
+
+    # 3. Automatic detection of cookies.txt in current working directory or script dir
+    script_dir = Path(__file__).resolve().parent
+    for search_dir in (Path.cwd(), script_dir):
+        for candidate in ("cookies.txt", "youtube_cookies.txt"):
+            p = search_dir / candidate
+            if p.is_file() and p.stat().st_size > 0:
+                cookie_opts["cookiefile"] = str(p.resolve())
+                return cookie_opts
+
+    return cookie_opts
+
+
+def apply_ytdlp_base_options(
+    options: Dict[str, Any],
+    cookie_opts: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Apply common anti-bot, runtime, and cookie options to yt-dlp options dictionary."""
+    # Configure external JavaScript runtime if available (e.g. Node.js)
+    if "js_runtimes" not in options and shutil.which("node"):
+        options["js_runtimes"] = {"node": {}}
+
+    # Anti-bot InnerTube client fallback for YouTube:
+    # Android/iOS clients bypass YouTube's "Sign in to confirm you're not a bot"
+    # check that is enforced on default web/visionos clients for datacenter or rate-limited IPs.
+    if "extractor_args" not in options:
+        options["extractor_args"] = {}
+    yt_args = options["extractor_args"].setdefault("youtube", {})
+    if "player_client" not in yt_args:
+        yt_args["player_client"] = ["android", "ios", "web"]
+
+    # Apply cookiefile / cookiesfrombrowser if available
+    effective_cookies = cookie_opts if cookie_opts is not None else resolve_cookie_options()
+    if effective_cookies:
+        if "cookiefile" in effective_cookies and "cookiefile" not in options:
+            options["cookiefile"] = effective_cookies["cookiefile"]
+        if "cookiesfrombrowser" in effective_cookies and "cookiesfrombrowser" not in options:
+            options["cookiesfrombrowser"] = effective_cookies["cookiesfrombrowser"]
+
+    return options
+
+
 # -------------------------------------------------------------------------
 # Constants
 # -------------------------------------------------------------------------
@@ -91,6 +198,17 @@ NO_FFMPEG_VIDEO_FORMAT = "b[ext=mp4]/b"
 VIDEO_QUALITIES = ["best", "2160", "1440", "1080", "720", "480", "360"]
 # mp3 quality presets offered by the interactive menu (0 = best available).
 MP3_QUALITIES = [0, 320, 256, 192, 128]
+
+# Human-readable names for every supported download source.
+PLATFORM_LABELS = {
+    "youtube": "YouTube",
+    "telegram": "Telegram",
+    "tiktok": "TikTok",
+    "facebook": "Facebook",
+}
+
+# Sources that download by direct URL only (no keyword search).
+SOCIAL_SOURCES = ("tiktok", "facebook")
 
 
 def build_video_format(quality: str, has_ffmpeg: bool) -> str:
@@ -237,6 +355,7 @@ def show_search_config(
     mp3_only: bool,
     output_dir: Path,
     ffmpeg_ok: bool,
+    cookie_opts: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Display the search configuration panel before any searching."""
     table = Table.grid(padding=(0, 2))
@@ -268,6 +387,12 @@ def show_search_config(
         else Text("Limited", style=YELLOW)
     )
     table.add_row("FFmpeg", status_text)
+    if cookie_opts:
+        if "cookiesfrombrowser" in cookie_opts:
+            b_name = cookie_opts["cookiesfrombrowser"][0]
+            table.add_row("Cookies", Text(f"Browser ({b_name})", style=GREEN))
+        elif "cookiefile" in cookie_opts:
+            table.add_row("Cookies", Text(f"File ({Path(cookie_opts['cookiefile']).name})", style=GREEN))
     console.print(
         Panel(
             table,
@@ -722,7 +847,11 @@ def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
-def search_youtube(keyword: str, limit: int) -> Optional[List[Dict[str, Any]]]:
+def search_youtube(
+    keyword: str,
+    limit: int,
+    cookie_opts: Optional[Dict[str, Any]] = None,
+) -> Optional[List[Dict[str, Any]]]:
     """Search YouTube and return a list of search results with basic info."""
     search_limit = limit
     if search_limit <= 0:
@@ -736,6 +865,7 @@ def search_youtube(keyword: str, limit: int) -> Optional[List[Dict[str, Any]]]:
         "playlistend": search_limit,
         "playlist_items": f"1-{search_limit}",
     }
+    apply_ytdlp_base_options(options, cookie_opts)
     query = f"ytsearch{search_limit}:{keyword}"
     try:
         _require_ytdlp()
@@ -781,6 +911,7 @@ def build_downloader_options(
     use_mp3: bool,
     mp3_codec: str = "mp3",
     mp3_quality: str = "192",
+    cookie_opts: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build the yt-dlp option dict used for a single video download."""
     options: Dict[str, Any] = {
@@ -805,6 +936,7 @@ def build_downloader_options(
                 "preferredquality": mp3_quality,
             }
         ]
+    apply_ytdlp_base_options(options, cookie_opts)
     return options
 
 
@@ -818,6 +950,8 @@ def download_video(
     total: int,
     mp3_codec: str = "mp3",
     mp3_quality: str = "192",
+    progress_label: Optional[str] = None,
+    cookie_opts: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Download one video. Returns the full yt-dlp info dict on success."""
     merge_mp4 = not mp3_only and has_ffmpeg and "+" in format_spec
@@ -830,8 +964,10 @@ def download_video(
         use_mp3,
         mp3_codec=mp3_codec,
         mp3_quality=mp3_quality,
+        cookie_opts=cookie_opts,
     )
-    pbar = FileProgress(console, f"[{position:02d}/{total:02d}] Downloading")
+    label = progress_label or f"[{position:02d}/{total:02d}] Downloading"
+    pbar = FileProgress(console, label)
     options["progress_hooks"] = [pbar.ytdlp_hook]
     _require_ytdlp()
     pbar.start()
@@ -853,6 +989,8 @@ def attempt_download(
     total: int,
     mp3_codec: str = "mp3",
     mp3_quality: str = "192",
+    progress_label: Optional[str] = None,
+    cookie_opts: Optional[Dict[str, Any]] = None,
 ) -> tuple[Dict[str, Any] | None, str | None]:
     """Try to download ``video`` once, then retry once more on failure.
 
@@ -873,6 +1011,8 @@ def attempt_download(
                     total,
                     mp3_codec=mp3_codec,
                     mp3_quality=mp3_quality,
+                    progress_label=progress_label,
+                    cookie_opts=cookie_opts,
                 ),
                 None,
             )
@@ -971,6 +1111,7 @@ def run_youtube_source(
     video_quality: str = "1080",
     mp3_codec: str = "mp3",
     mp3_quality: str = "192",
+    cookie_opts: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run the full YouTube source workflow. Returns result counts.
 
@@ -988,11 +1129,14 @@ def run_youtube_source(
     the video format selector. ``mp3_codec`` ("mp3"/"m4a") and ``mp3_quality``
     (a bitrate like "192"/"320" or "0" for best) control the mp3 postprocessor.
     """
+    effective_cookie_opts = (
+        cookie_opts if cookie_opts is not None else resolve_cookie_options()
+    )
     dirs = build_dirs(base_dir, keyword)
 
     if preselected_results is None:
         with console.status(f'[cyan]Searching YouTube for "{keyword}"...', spinner="dots"):
-            results = search_youtube(keyword, limit)
+            results = search_youtube(keyword, limit, cookie_opts=effective_cookie_opts)
         console.print()
         if results is None:
             show_error(
@@ -1052,27 +1196,47 @@ def run_youtube_source(
             total,
             mp3_codec=effective_mp3_codec or "mp3",
             mp3_quality=mp3_quality,
+            cookie_opts=effective_cookie_opts,
         )
         if error is not None or not info:
             failed_count += 1
             reason = error or "Unknown error"
+            clean_reason = strip_ansi(reason)
             failed.append(
                 {
                     "title": title,
                     "url": video["url"],
                     "video_id": video_id,
-                    "error": reason,
+                    "error": clean_reason,
                 }
             )
-            meta = build_metadata(video, info, "failed", error=reason)
+            meta = build_metadata(video, info, "failed", error=clean_reason)
             processed.append(meta)
             write_per_video_metadata(dirs["metadata"], position, meta)
+            error_elements = [
+                Text(f"{MARK_FAIL} Download failed", style=RED),
+                Text(f"Reason: {clean_reason}", style=DIM),
+            ]
+            if is_bot_challenge_error(clean_reason):
+                error_elements.extend(
+                    [
+                        Text(),
+                        Text("YouTube bot verification detected. Solutions:", style=YELLOW),
+                        Text(
+                            "  • Export cookies from your browser to 'cookies.txt' in this directory",
+                            style=DIM,
+                        ),
+                        Text(
+                            "  • Or run with: --cookies-from-browser chrome (or firefox/brave/edge)",
+                            style=DIM,
+                        ),
+                        Text("  • Or pass: --cookies /path/to/cookies.txt", style=DIM),
+                        Text("  • Or set COOKIES_FILE=cookies.txt in .env", style=DIM),
+                    ]
+                )
             console.print(
                 Panel(
-                    Group(
-                        Text(f"{MARK_FAIL} Download failed", style=RED),
-                        Text(f"Reason: {reason}", style=DIM),
-                    ),
+                    Group(*error_elements),
                     border_style="red",
                     box=box.ROUNDED,
                     padding=(0, 1),
@@ -1164,7 +1328,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
             "YouTube Media Downloader\n"
             "\n"
             "Search YouTube and/or Telegram for a keyword and download\n"
-            "the accessible matching media with full metadata."
+            "the accessible matching media with full metadata. TikTok and\n"
+            "Facebook videos are downloaded by direct URL."
         ),
         epilog=(
             "Examples:\n"
@@ -1174,7 +1339,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
             '  python media_finder.py "Apostle Babs Adewumi" --source telegram --type video\n'
             '  python media_finder.py "Apostle Babs Adewumi" --source all --limit 20\n'
             '  python media_finder.py "Apostle Babs Adewumi" --mp3-only\n'
-            '  python media_finder.py "Apostle Babs Adewumi" --output ./my-downloads'
+            '  python media_finder.py "Apostle Babs Adewumi" --output ./my-downloads\n'
+            '  python media_finder.py --source tiktok --url "https://www.tiktok.com/..."\n'
+            '  python media_finder.py --source facebook --url "https://www.facebook.com/..."\n'
+            '  python media_finder.py --url "https://vm.tiktok.com/..."'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1203,9 +1371,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--source",
-        choices=["youtube", "telegram", "all"],
+        choices=["youtube", "telegram", "tiktok", "facebook", "all"],
         default="youtube",
-        help="Which source to search (default: youtube)",
+        help=(
+            "Which source to use (default: youtube). tiktok and facebook "
+            "download by direct URL, so combine them with --url."
+        ),
     )
     parser.add_argument(
         "--type",
@@ -1239,7 +1410,23 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--url",
         default=None,
-        help="Download a single YouTube video by its URL without interactive prompts",
+        help=(
+            "Download a single video by URL. The platform is detected "
+            "automatically (YouTube/TikTok/Facebook); use --source to pin "
+            "the platform."
+        ),
+    )
+    parser.add_argument(
+        "--cookies",
+        dest="cookiefile",
+        default=None,
+        help="Path to a Netscape-format cookies.txt file for authentication (bypasses bot checks)",
+    )
+    parser.add_argument(
+        "--cookies-from-browser",
+        dest="cookies_from_browser",
+        default=None,
+        help="Extract cookies from a browser (e.g. chrome, firefox, brave, edge, safari)",
     )
     args = parser.parse_args(argv)
     if args.limit is not None and args.limit < 0:
@@ -1267,6 +1454,7 @@ class InteractiveConfig:
     output_dir: Optional[Path] = None
     format_spec: Optional[str] = None
     tg_auto: bool = True
+    cookie_opts: Dict[str, Any] = field(default_factory=dict)
 
 
 def _require_terminal() -> bool:
@@ -1485,8 +1673,8 @@ def _configure(cfg: InteractiveConfig) -> None:
 def show_platform_menu() -> str:
     """Render the platform-selection menu.
 
-    Returns one of ``"youtube"``, ``"telegram"``, ``"all"``, ``"url"``
-    or ``"exit"``.
+    Returns one of ``"youtube"``, ``"telegram"``, ``"tiktok"``, ``"facebook"``,
+    ``"all"``, ``"url"`` or ``"exit"``.
     """
     console.print(_heading("Select Download Source", CYAN))
     console.print()
@@ -1499,23 +1687,27 @@ def show_platform_menu() -> str:
     console.print()
     options = [
         "YouTube (search by keyword)",
-        "Telegram",
-        "Both YouTube & Telegram",
-        "Download by YouTube Link",
+        "Telegram (search by keyword)",
+        "TikTok (download by video link)",
+        "Facebook (download by video link)",
+        "All (YouTube + Telegram)",
+        "Download by Link (auto-detect)",
         "Exit",
     ]
     choice = _ask_choice("Enter your choice:", options)
     return {
         1: "youtube",
         2: "telegram",
-        3: "all",
-        4: "url",
-        5: "exit",
+        3: "tiktok",
+        4: "facebook",
+        5: "all",
+        6: "url",
+        7: "exit",
     }[choice]
 
 
 def _platform_label(platform: str) -> str:
-    return {"youtube": "YouTube", "telegram": "Telegram"}.get(platform, platform.title())
+    return PLATFORM_LABELS.get(platform, platform.title())
 
 
 def show_download_summary(cfg: InteractiveConfig) -> int:
@@ -1676,7 +1868,7 @@ def _select_youtube_results(
     with console.status(
         f'[cyan]Searching YouTube for "{cfg.keyword}"...', spinner="dots"
     ):
-        results = search_youtube(cfg.keyword, cfg.limit)
+        results = search_youtube(cfg.keyword, cfg.limit, cookie_opts=cfg.cookie_opts)
     console.print()
     if results is None:
         show_error(
@@ -1735,6 +1927,7 @@ def _run_youtube_interactive(
             has_ffmpeg,
             preselected_results=selected,
             video_quality=cfg.yt_video_quality,
+            cookie_opts=cfg.cookie_opts,
         )
         mp3_counts = run_youtube_source(
             cfg.keyword,
@@ -1747,6 +1940,7 @@ def _run_youtube_interactive(
             preselected_results=selected,
             mp3_codec=cfg.mp3_codec,
             mp3_quality=cfg.mp3_quality or "0",
+            cookie_opts=cfg.cookie_opts,
         )
         return False, _merge_counts(video_counts, mp3_counts)
     return False, run_youtube_source(
@@ -1760,6 +1954,7 @@ def _run_youtube_interactive(
         video_quality=cfg.yt_video_quality,
         mp3_codec=cfg.mp3_codec,
         mp3_quality=cfg.mp3_quality or "0",
+        cookie_opts=cfg.cookie_opts,
     )
 
 
@@ -1820,13 +2015,17 @@ def run_configured_sources(
     return interrupted, any_failed
 
 
-def _extract_url_video(url: str) -> Optional[Dict[str, Any]]:
+def _extract_url_video(
+    url: str,
+    cookie_opts: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     """Fetch basic info for a single YouTube video URL."""
     options: Dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
     }
+    apply_ytdlp_base_options(options, cookie_opts)
     try:
         _require_ytdlp()
         with yt_dlp.YoutubeDL(options) as ydl:
@@ -1858,19 +2057,57 @@ def run_url_download_flow(
     format_spec_arg: Optional[str],
     mp3_override: Optional[bool] = None,
     url: Optional[str] = None,
+    expected: Optional[str] = None,
+    cookie_opts: Optional[Dict[str, Any]] = None,
 ) -> int:
-    """Interactive download-by-link flow. Allows pasting a YouTube URL directly.
+    """Interactive download-by-link flow for any supported platform.
+
+    The passed/pasted URL is auto-detected (YouTube / TikTok / Facebook).
+    When ``expected`` is set, the URL is validated against that platform
+    first and a clear message is shown instead of crashing on a mismatch.
 
     When ``mp3_override`` is given (True/False), the download-mode question is
     skipped and that mode is used directly. When ``url`` is given, the paste
     prompt is skipped too. Returns 0 on success, 1 on failure/cancel.
     """
-    console.print(_heading("Download by YouTube Link", CYAN))
+    from src.link import detect_platform, validate_url  # lazy, avoids import cycle
+
+    effective_cookie_opts = (
+        cookie_opts if cookie_opts is not None else resolve_cookie_options()
+    )
+
+    heading = "Download by Link"
+    if expected == "youtube":
+        heading = "Download by YouTube Link"
+    elif expected in SOCIAL_SOURCES:
+        heading = f"{PLATFORM_LABELS[expected]} Download"
+    console.print(_heading(heading, CYAN))
     console.print()
+
     if url:
         url = url.strip()
     else:
-        url = _ask_text("Paste the YouTube video URL", allow_empty=False)
+        if expected:
+            message = f"Paste the {PLATFORM_LABELS[expected]} video URL"
+        else:
+            message = "Paste the video URL (YouTube, TikTok, or Facebook)"
+        url = _ask_text(message, allow_empty=False)
+
+    platform = detect_platform(url)
+    validation = validate_url(url, expected)
+    if validation:
+        show_error(
+            validation,
+            hint="Paste a supported, publicly accessible video URL.",
+        )
+        return 1
+    if platform == "telegram":
+        show_error(
+            "Telegram is a keyword-search source and does not support "
+            "downloading by direct link.",
+            hint='Use:  python media_finder.py "keyword" --source telegram',
+        )
+        return 1
 
     if mp3_override is None:
         console.print(Text("Download mode:", style=BRIGHT))
@@ -1879,8 +2116,24 @@ def run_url_download_flow(
     else:
         mp3_only = bool(mp3_override)
 
+    if platform in SOCIAL_SOURCES:
+        from src.link import download_social_url  # lazy, avoids import cycle
+
+        return download_social_url(
+            platform,
+            url,
+            base_dir,
+            has_ffmpeg,
+            mp3_only,
+            format_spec_arg,
+            cookie_opts=effective_cookie_opts,
+        )
+
+    if platform != "youtube":
+        return 1
+
     with console.status("Fetching video info...", spinner="dots"):
-        video = _extract_url_video(url)
+        video = _extract_url_video(url, cookie_opts=effective_cookie_opts)
     console.print()
     if video is None:
         show_error(
@@ -1907,10 +2160,24 @@ def run_url_download_flow(
     ok_line(f"Downloading: {_trunc(video['title'], 60)}")
     console.print()
     info, error = attempt_download(
-        video, videos_dir, format_spec, mp3_only, has_ffmpeg, 1, 1
+        video,
+        videos_dir,
+        format_spec,
+        mp3_only,
+        has_ffmpeg,
+        1,
+        1,
+        cookie_opts=effective_cookie_opts,
     )
     if error is not None or not info:
-        show_error(f"Download failed: {error or 'Unknown error'}")
+        clean_err = strip_ansi(error or "Unknown error")
+        hint = "Please provide a publicly accessible video URL."
+        if is_bot_challenge_error(clean_err):
+            hint = (
+                "YouTube bot verification detected. Use --cookies cookies.txt or "
+                "--cookies-from-browser chrome to authenticate."
+            )
+        show_error(f"Download failed: {clean_err}", hint=hint)
         return 1
 
     download_file = None
@@ -1994,8 +2261,18 @@ def run_interactive_session(args: argparse.Namespace) -> int:
             console.print()
             return exit_code
 
-        if platform == "url":
-            if run_url_download_flow(base_dir, has_ffmpeg, args.format_spec) != 0:
+        if platform in ("url", "tiktok", "facebook"):
+            expected = None if platform == "url" else platform
+            if run_url_download_flow(
+                base_dir,
+                has_ffmpeg,
+                args.format_spec,
+                url=None,
+                expected=expected,
+                cookie_opts=resolve_cookie_options(
+                    args.cookiefile, args.cookies_from_browser
+                ),
+            ) != 0:
                 exit_code = 1
             continue  # back to the platform selection menu
 
@@ -2003,6 +2280,9 @@ def run_interactive_session(args: argparse.Namespace) -> int:
             platforms=["youtube", "telegram"] if platform == "all" else [platform]
         )
         cfg.output_dir = base_dir
+        cfg.cookie_opts = resolve_cookie_options(
+            args.cookiefile, args.cookies_from_browser
+        )
         if args.keyword:
             cfg.keyword = args.keyword
         if args.format_spec:
@@ -2035,23 +2315,37 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(argv)
     base_dir = Path(args.output)
     has_ffmpeg = ffmpeg_available()
+    cookie_opts = resolve_cookie_options(args.cookiefile, args.cookies_from_browser)
 
     if args.url and not args.interactive:
         show_startup_banner(has_ffmpeg, base_dir, "url")
         if not has_ffmpeg:
             show_ffmpeg_warning()
+        if args.source == "telegram":
+            show_error(
+                "Telegram works by keyword search, not by direct URL.",
+                'Use:  python media_finder.py "keyword" --source telegram',
+            )
+            return 1
         if yt_dlp is None:
             try:
                 _require_ytdlp()
             except RuntimeError as exc:
                 show_error(str(exc))
                 return 1
+        expected = (
+            args.source
+            if args.source in ("youtube", *SOCIAL_SOURCES)
+            else None
+        )
         return run_url_download_flow(
             base_dir,
             has_ffmpeg,
             args.format_spec,
             mp3_override=args.mp3_only,
             url=args.url,
+            expected=expected,
+            cookie_opts=cookie_opts,
         )
 
     if args.interactive or args.keyword is None:
@@ -2066,6 +2360,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     keyword = args.keyword.strip()
     if not keyword:
         show_error("The search keyword cannot be empty.")
+        return 1
+
+    if args.source in SOCIAL_SOURCES:
+        show_error(
+            f"{PLATFORM_LABELS[args.source]} downloads work by direct video URL only.",
+            f'Use:  python media_finder.py --source {args.source} --url "https://..."',
+        )
         return 1
 
     show_startup_banner(has_ffmpeg, base_dir, args.source)
@@ -2091,6 +2392,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         args.mp3_only,
         base_dir,
         has_ffmpeg,
+        cookie_opts=cookie_opts,
     )
 
     total_downloaded = total_skipped = total_failed = total_processed = 0
@@ -2099,7 +2401,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             if source == "youtube":
                 counts = run_youtube_source(
-                    keyword, yt_limit, base_dir, args.format_spec, args.mp3_only, has_ffmpeg
+                    keyword,
+                    yt_limit,
+                    base_dir,
+                    args.format_spec,
+                    args.mp3_only,
+                    has_ffmpeg,
+                    cookie_opts=cookie_opts,
                 )
             else:
                 from src.telegram import run_telegram_source  # lazy, avoids import cycle

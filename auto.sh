@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Auto-setup launcher for the NK Media Finder.
 #
-# Sets up the virtual environment and dependencies, then launches
-# the interactive media downloader (YouTube / Telegram / by-link).
+# Set up the virtual environment and dependencies, then launch
+# the interactive media downloader (YouTube / Telegram / TikTok /
+# Facebook / by-link).
 #
 # Usage:
 #   ./auto.sh
@@ -48,7 +49,7 @@ fi
 echo
 echo "[2/4] Checking dependencies..."
 need_install=0
-for module in yt_dlp rich telethon dotenv; do
+for module in yt_dlp rich telethon dotenv curl_cffi; do
     if ! "$VENV_PY" -c "import $module" >/dev/null 2>&1; then
         echo "  -> Missing dependency: $module"
         need_install=1
