@@ -21,7 +21,9 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
+import io
 import json
 import os
 import re
@@ -81,6 +83,23 @@ def _require_ytdlp() -> None:
 def strip_ansi(text: str) -> str:
     """Remove ANSI escape sequences from a string."""
     return re.sub(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])", "", text or "")
+
+
+def resolve_channel_name(info: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Return the best available channel/uploader name from an info dict.
+
+    yt-dlp uses different keys depending on the source and extraction mode:
+    search results and YouTube videos usually expose ``channel``, while other
+    videos/pages only provide ``uploader``, ``creator`` or ``author``. Reading
+    all of them prevents "Unknown" from appearing when one field is missing.
+    """
+    if not info:
+        return None
+    for key in ("channel", "uploader", "creator", "author"):
+        value = info.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def is_bot_challenge_error(error_msg: str) -> bool:
@@ -188,6 +207,8 @@ def apply_ytdlp_base_options(
 
 DEFAULT_YOUTUBE_LIMIT = 50
 DEFAULT_TELEGRAM_LIMIT = 20
+# Cap full-info lookups used to recover view counts missing from search entries.
+MAX_VIEW_LOOKUPS = 20
 
 # Prefer MP4 at max 1080p, fall back to a single combined MP4, then anything.
 DEFAULT_VIDEO_FORMAT = "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b"
@@ -474,7 +495,7 @@ def show_results_table(plugin: str, items: List[Dict[str, Any]]) -> None:
         table.add_row(
             str(index),
             _trunc(item.get("title") or "Unknown", 48),
-            _trunc(item.get("channel") or "Unknown", 28),
+            _trunc(resolve_channel_name(item) or "Unknown", 28),
             (item.get("media_type") or "document").title(),
             item.get("size_display") or "",
         )
@@ -847,6 +868,36 @@ def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
+def _enrich_missing_views(
+    results: List[Dict[str, Any]],
+    cookie_opts: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Fill view counts that flat YouTube search entries omit.
+
+    Live streams are the common case: search results expose only
+    ``concurrent_view_count`` instead of ``view_count``. Use that when present,
+    and fetch full video info as a last resort for other missing values.
+    """
+    lookups = 0
+    for result in results:
+        concurrent = result.pop("concurrent_view_count", None)
+        if result.get("view_count") is not None:
+            continue
+        if concurrent is not None:
+            result["view_count"] = concurrent
+            continue
+        if lookups >= MAX_VIEW_LOOKUPS:
+            continue
+        full = _extract_url_video(result.get("url") or "", cookie_opts=cookie_opts)
+        lookups += 1
+        if not full or full.get("view_count") is None:
+            continue
+        result["view_count"] = full["view_count"]
+        for key in ("duration", "channel", "channel_url", "upload_date"):
+            if result.get(key) is None and full.get(key) is not None:
+                result[key] = full[key]
+
+
 def search_youtube(
     keyword: str,
     limit: int,
@@ -890,16 +941,18 @@ def search_youtube(
                 "video_id": video_id,
                 "url": entry.get("url")
                 or f"https://www.youtube.com/watch?v={video_id}",
-                "channel": entry.get("channel"),
-                "channel_url": entry.get("channel_url"),
+                "channel": resolve_channel_name(entry),
+                "channel_url": entry.get("channel_url") or entry.get("uploader_url"),
                 "upload_date": entry.get("upload_date"),
                 "duration": entry.get("duration"),
                 "view_count": entry.get("view_count"),
+                "concurrent_view_count": entry.get("concurrent_view_count"),
                 "description": entry.get("description"),
                 "thumbnail": entry.get("thumbnail")
                 or (thumbnails[-1].get("url") if thumbnails else None),
             }
         )
+    _enrich_missing_views(results, cookie_opts)
     return results
 
 
@@ -972,11 +1025,33 @@ def download_video(
     _require_ytdlp()
     pbar.start()
     try:
-        with yt_dlp.YoutubeDL(options) as ydl:
-            info = ydl.extract_info(video["url"], download=True)
+        # yt-dlp writes errors directly to stderr even with ``quiet=True``.
+        # Capture them so a recoverable format failure does not print a scary
+        # raw ERROR line before we retry with a safe selector; real failures
+        # still surface through the raised exception and our error panels.
+        with contextlib.redirect_stderr(io.StringIO()):
+            with yt_dlp.YoutubeDL(options) as ydl:
+                info = ydl.extract_info(video["url"], download=True)
     finally:
         pbar.stop()
     return info or {}
+
+
+def is_format_unavailable_error(error: Optional[str]) -> bool:
+    """Return True when yt-dlp rejected the requested format selector.
+
+    yt-dlp raises ``DownloadError: ERROR: [youtube] ID: Requested format is
+    not available. ...`` for both custom selectors (e.g. an invalid format id
+    like ``1``) and selectors whose formats are missing on a particular video.
+    """
+    return bool(error) and "requested format is not available" in error.lower()
+
+
+def fallback_format_spec(mp3_only: bool, has_ffmpeg: bool) -> str:
+    """Return a conservative selector used when a custom selector is invalid."""
+    if mp3_only:
+        return "bestaudio/best"
+    return "bv*+ba/b" if has_ffmpeg else "b"
 
 
 def attempt_download(
@@ -994,17 +1069,26 @@ def attempt_download(
 ) -> tuple[Dict[str, Any] | None, str | None]:
     """Try to download ``video`` once, then retry once more on failure.
 
+    If yt-dlp reports that the requested format is unavailable, the download
+    is retried immediately with a safe automatic selector instead of repeating
+    the same invalid selector. This happens when a custom ``--format`` value
+    (or an interactive format entry such as ``1``) is not a real format id for
+    the video.
+
     Returns ``(info_dict, None)`` on success or ``(None, error_message)``.
     """
     attempts = 2
     last_error: Optional[str] = None
+    fallback = fallback_format_spec(mp3_only, has_ffmpeg)
+    used_fallback = False
     for attempt in range(attempts):
+        current_format = fallback if used_fallback else format_spec
         try:
             return (
                 download_video(
                     video,
                     videos_dir,
-                    format_spec,
+                    current_format,
                     mp3_only,
                     has_ffmpeg,
                     position,
@@ -1018,8 +1102,21 @@ def attempt_download(
             )
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
+            if (
+                not used_fallback
+                and fallback != format_spec
+                and is_format_unavailable_error(last_error)
+            ):
+                skip_line(
+                    f"Format '{format_spec}' is not available for this video; "
+                    "retrying with the best available format."
+                )
+                used_fallback = True
+                continue
             if attempt + 1 < attempts:
                 time.sleep(2)
+    if used_fallback:
+        last_error = f"{last_error} (also failed with the best available format)"
     return None, last_error
 
 
@@ -1046,13 +1143,19 @@ def build_metadata(
         "title": source.get("title") or video.get("title"),
         "url": source.get("webpage_url") or video.get("url"),
         "video_id": source.get("id") or video.get("video_id"),
-        "channel": source.get("channel") or video.get("channel"),
-        "channel_url": source.get("channel_url") or video.get("channel_url"),
+        "channel": resolve_channel_name(source) or resolve_channel_name(video),
+        "channel_url": (
+            source.get("channel_url")
+            or source.get("uploader_url")
+            or video.get("channel_url")
+        ),
         "upload_date": source.get("upload_date") or video.get("upload_date"),
         "duration": source.get("duration") or video.get("duration"),
-        "duration_formatted": simple_duration(source.get("duration")),
+        "duration_formatted": simple_duration(source.get("duration") or video.get("duration")),
         "view_count": source.get("view_count") or video.get("view_count"),
-        "views_formatted": simple_views(source.get("view_count")),
+        "views_formatted": simple_views(
+            source.get("view_count") or video.get("view_count")
+        ),
         "description": source.get("description") or video.get("description"),
         "thumbnail": thumbnail or video.get("thumbnail"),
         "status": status,
@@ -1179,12 +1282,16 @@ def run_youtube_source(
             base_meta = build_metadata(video, None, "skipped")
             processed.append(base_meta)
             write_per_video_metadata(dirs["metadata"], position, base_meta)
-            show_download_card(position, total, title, video.get("channel") or "", "Skipped")
+            show_download_card(
+                position, total, title, resolve_channel_name(video) or "", "Skipped"
+            )
             skip_line(f"Already downloaded: {_trunc(title, 60)}")
             console.print()
             continue
 
-        show_download_card(position, total, title, video.get("channel") or "", "Downloading")
+        show_download_card(
+            position, total, title, resolve_channel_name(video) or "", "Downloading"
+        )
 
         info, error = attempt_download(
             video,
@@ -1570,14 +1677,20 @@ def _prompt_youtube_specific(cfg: InteractiveConfig) -> None:
         _prompt_mp3_options(cfg)
     if cfg.yt_mode in ("video", "both"):
         _prompt_video_quality(cfg)
-    cfg.format_spec = (
-        _ask_text(
-            "yt-dlp format selector (Enter for automatic)",
+    while True:
+        custom_format = _ask_text(
+            "Custom yt-dlp format (Enter = use the quality chosen above)",
             cfg.format_spec or "",
             allow_empty=True,
-        )
-        or None
-    )
+        ).strip()
+        if re.fullmatch(r"[1-9]", custom_format):
+            err_line(
+                "That looks like a menu number, not a format id. "
+                "Leave blank to use the quality chosen above."
+            )
+            continue
+        cfg.format_spec = custom_format or None
+        break
 
 
 def _prompt_telegram_specific(cfg: InteractiveConfig) -> None:
@@ -1818,7 +1931,7 @@ def _show_yt_results_table(keyword: str, results: List[Dict[str, Any]]) -> None:
         table.add_row(
             str(index),
             _trunc(item.get("title") or "Unknown", 46),
-            _trunc(item.get("channel") or "Unknown", 26),
+            _trunc(resolve_channel_name(item) or "Unknown", 26),
             simple_duration(item.get("duration")),
             simple_views(item.get("view_count")),
         )
@@ -2040,8 +2153,8 @@ def _extract_url_video(
         "title": info.get("title") or "Download",
         "video_id": info.get("id") or "url",
         "url": url,
-        "channel": info.get("channel"),
-        "channel_url": info.get("channel_url"),
+        "channel": resolve_channel_name(info),
+        "channel_url": info.get("channel_url") or info.get("uploader_url"),
         "upload_date": info.get("upload_date"),
         "duration": info.get("duration"),
         "view_count": info.get("view_count"),

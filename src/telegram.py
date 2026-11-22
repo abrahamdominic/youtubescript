@@ -173,7 +173,7 @@ async def _tg_search(
     seen: set = set()
     found_wait = False
 
-    def add_item(message: Any, dialog_title: str) -> None:
+    def add_item(message: Any, dialog_title: Optional[str]) -> None:
         key = f"{getattr(message, 'chat_id', '')}:{getattr(message, 'id', '')}"
         if key in seen or not message.id:
             return
@@ -189,12 +189,19 @@ async def _tg_search(
             title = (message.text or "").strip().splitlines()[0][:140]
         else:
             title = name or f"Message {message.id}"
+        chat = getattr(message, "chat", None)
+        channel_name = (
+            str(dialog_title or "").strip()
+            or str(getattr(chat, "title", None) or "").strip()
+            or str(getattr(chat, "username", None) or "").strip()
+            or f"Chat {getattr(message, 'chat_id', '')}"
+        )
         results.append(
             {
                 "message": message,
                 "message_id": message.id,
                 "chat_id": message.chat_id,
-                "channel": dialog_title or "Unknown",
+                "channel": channel_name,
                 "title": title,
                 "media_type": detected,
                 "filename": name or None,
@@ -211,7 +218,11 @@ async def _tg_search(
         async for dialog in client.iter_dialogs():
             if len(results) >= limit:
                 break
-            dialog_title = getattr(dialog, "title", None) or "Unknown"
+            dialog_title = (
+                getattr(dialog, "title", None)
+                or getattr(dialog, "name", None)
+                or getattr(getattr(dialog, "entity", None), "title", None)
+            )
 
             # Text / caption match.
             try:

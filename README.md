@@ -331,7 +331,8 @@ The keyword-based folder is created automatically inside the given directory
 --type {video,mp3,document,image,all}
                       Telegram media type filter (default: all)
 --yes                 Auto-download all Telegram results without asking
---format FORMAT       yt-dlp format selector (overrides the automatic choice)
+--format FORMAT       yt-dlp format selector (overrides the automatic choice;
+                      falls back to the best available format if invalid)
 --mp3-only          Download mp3 instead of video
 --url URL             Download a single video by URL; the platform is
                       auto-detected (YouTube/TikTok/Facebook)
