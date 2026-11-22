@@ -35,6 +35,23 @@ Non-interactive one-shot use (YouTube, first 50 results into `downloads/`):
 python media_finder.py "Apostle Babs Adewumi"
 ```
 
+### Play without downloading
+
+Choose **Play by Link (stream without downloading)** from the main menu to
+paste a YouTube/TikTok/Facebook URL, or pick **Play a result** from the
+YouTube or Telegram results menu. Media is streamed straight into **mpv**,
+**VLC** or **ffplay** — nothing is written to `downloads/`.
+
+Install a player first (mpv recommended):
+
+- **Linux (Debian/Ubuntu):** `sudo apt install mpv` (or `sudo apt install ffmpeg` for ffplay)
+- **macOS:** `brew install mpv`
+- **Windows:** `winget install mpv`
+
+Set `MEDIA_PLAYER=/path/to/player` to override auto-detection. Streaming uses a
+single progressive MP4 (or audio-only) format so every player can handle it;
+downloads keep the higher-quality merged formats.
+
 ## Features
 
 - **Polished Rich CLI** — branded startup banner, live download progress bars
@@ -52,6 +69,9 @@ python media_finder.py "Apostle Babs Adewumi"
 - **TikTok / Facebook by link** — paste a video URL (short links like
   `vm.tiktok.com` and `fb.watch` included) and the best available video + audio
   is downloaded and merged with FFmpeg, or extracted to mp3 with `--mp3-only`.
+- **Stream without downloading** — play YouTube, Telegram, TikTok and Facebook
+  media directly in mpv/VLC/ffplay from the results menus or a pasted link.
+  Nothing is saved to `downloads/` and no download metadata is written.
 - **Duplicate protection & resume** — already-downloaded YouTube videos (by video
   ID), Telegram media (by `chat_id:message_id`) and TikTok/Facebook videos
   (by video ID) are always skipped; re-running a command resumes without
@@ -75,6 +95,7 @@ python media_finder.py "Apostle Babs Adewumi"
 - Python 3.10 or newer
 - [FFmpeg](https://ffmpeg.org) — to merge video/mp3 streams, produce MP4
   containers and extract MP3 mp3 (see below)
+- A media player for streaming — mpv (recommended), VLC or ffplay (from FFmpeg)
 - An internet connection
 - `yt-dlp` (YouTube), `rich` (terminal UI), `Telethon` (Telegram),
   `python-dotenv` (`.env` loading) and `curl_cffi` (browser impersonation,
@@ -389,8 +410,9 @@ src/telegram.py        Isolated Telegram source: Telethon credentials, auth,
                        search, media classification, downloads and metadata
 src/link.py            Isolated direct-link source: URL platform detection,
                        TikTok/Facebook downloads via yt-dlp and their metadata
-auto.sh                Recommended launcher (interactive): creates the venv,
-                       installs missing deps, checks FFmpeg, starts the tool
+src/player.py          Streams media to mpv/VLC/ffplay without saving files
+auto.sh                Recommended launcher (interactive): silently sets up the
+                       venv/deps, starts the tool without showing setup UI
 run.sh                 Auto-setup launcher: creates the venv, installs any
                        missing dependencies (incl. yt-dlp), then runs the script
 youtube_downloader.py  Compatibility wrapper re-exporting the main CLI
@@ -403,6 +425,8 @@ requirements.txt       Python dependencies
 - `src/link.py` imports the shared helpers directly from `media_finder` and
   owns URL platform detection (`detect_platform`), URL validation, the
   TikTok/Facebook downloader and their per-platform metadata/manifest.
+- `src/player.py` resolves direct URLs with yt-dlp (or pipes Telethon media into
+  the player's stdin) and is imported lazily only when playback is requested.
 - `media_finder.py` imports `run_telegram_source` and the direct-link helpers
   **lazily**, only when those sources are used — so plain YouTube runs never
   touch Telethon or the social downloader. This keeps the modules free of

@@ -34,6 +34,7 @@ from rich.text import Text
 # Shared helpers live in the main module (no duplication, no import cycle —
 # media_finder imports this module only lazily from inside main()).
 import media_finder as _m
+from src import player as _player
 
 
 console = _m.console
@@ -45,10 +46,15 @@ load_manifest = _m.load_manifest
 FileProgress = _m.FileProgress
 ok_line = _m.ok_line
 skip_line = _m.skip_line
+err_line = _m.err_line
+dim_line = _m.dim_line
 show_error = _m.show_error
 show_download_card = _m.show_download_card
 show_results_table = _m.show_results_table
 show_summary = _m.show_summary
+_ask_choice = _m._ask_choice
+_ask_text = _m._ask_text
+_parse_number_list = _m._parse_number_list
 _trunc = _m._trunc
 _fmt_bytes = _m._fmt_bytes
 _safe_file_size = _m._safe_file_size
@@ -444,24 +450,43 @@ async def _tg_worker(
         show_telegram_search_results(keyword, items)
 
         if not auto_yes:
-            answer = Prompt.ask(
-                "[cyan]Download all results? [Y/n][/]",
-                default="Y",
-                choices=["Y", "y", "n", "N"],
-                console=console,
-            )
-            console.print()
-            if answer.strip().lower() != "y":
-                skip_line("Download cancelled by user")
-                console.print()
-                show_summary("Telegram", total, 0, 0, 0, tg_dirs["base"])
-                return {
-                    "ok": True,
-                    "downloaded": 0,
-                    "skipped": 0,
-                    "failed": 0,
-                    "total": total,
-                }
+            while True:
+                choice = _ask_choice(
+                    "What do you want to do with these results?",
+                    [
+                        "Download all results",
+                        "Play a result (stream without downloading)",
+                        "Cancel",
+                    ],
+                )
+                if choice == 1:
+                    console.print()
+                    break
+                if choice == 3:
+                    skip_line("Operation cancelled by user")
+                    console.print()
+                    show_summary("Telegram", total, 0, 0, 0, tg_dirs["base"])
+                    return {
+                        "ok": True,
+                        "downloaded": 0,
+                        "skipped": 0,
+                        "failed": 0,
+                        "total": total,
+                    }
+
+                while True:
+                    raw = _ask_text("Enter the result number to play", allow_empty=False)
+                    indexes = _parse_number_list(raw, total)
+                    if len(indexes) != 1:
+                        err_line("Enter exactly one valid result number.")
+                        continue
+                    played = await _player.play_telegram_item(
+                        client, items[indexes[0] - 1]
+                    )
+                    if not played:
+                        err_line("Playback could not be started.")
+                    console.print()
+                    break
 
         manifest = load_manifest(tg_dirs["manifest"])
         processed: List[Dict[str, Any]] = []

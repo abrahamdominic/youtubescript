@@ -1787,13 +1787,14 @@ def show_platform_menu() -> str:
     """Render the platform-selection menu.
 
     Returns one of ``"youtube"``, ``"telegram"``, ``"tiktok"``, ``"facebook"``,
-    ``"all"``, ``"url"`` or ``"exit"``.
+    ``"all"``, ``"url"``, ``"play_url"`` or ``"exit"``.
     """
-    console.print(_heading("Select Download Source", CYAN))
+    console.print(_heading("Select Source Or Action", CYAN))
     console.print()
     console.print(
         Text(
-            "Search and download from a platform, download by link, or combine platforms.",
+            "Search and download, combine platforms, or stream a link without "
+            "saving it.",
             style=DIM,
         )
     )
@@ -1805,6 +1806,7 @@ def show_platform_menu() -> str:
         "Facebook (download by video link)",
         "All (YouTube + Telegram)",
         "Download by Link (auto-detect)",
+        "Play by Link (stream without downloading)",
         "Exit",
     ]
     choice = _ask_choice("Enter your choice:", options)
@@ -1815,7 +1817,8 @@ def show_platform_menu() -> str:
         4: "facebook",
         5: "all",
         6: "url",
-        7: "exit",
+        7: "play_url",
+        8: "exit",
     }[choice]
 
 
@@ -1969,10 +1972,23 @@ def _parse_number_list(raw: str, maximum: int) -> List[int]:
     return sorted(set(selected))
 
 
+def play_video_result(video: Dict[str, Any], cfg: InteractiveConfig) -> bool:
+    """Stream a single YouTube search result without saving it to disk."""
+    from src import player  # lazy: keeps plain download runs free of player code
+
+    return player.play_url(
+        video.get("url") or "",
+        video.get("title") or "Video",
+        cookie_opts=cfg.cookie_opts,
+        mp3_only=cfg.yt_mode == "mp3",
+        format_spec=cfg.format_spec,
+    )
+
+
 def _select_youtube_results(
     cfg: InteractiveConfig,
 ) -> Optional[List[Dict[str, Any]]]:
-    """Search YouTube once and let the user pick which results to download.
+    """Search YouTube once and let the user download or stream the results.
 
     Returns the selected subset in search order, or ``None`` when there are no
     results (or the user chose to cancel). Raising on the Search Configuration
@@ -1995,21 +2011,37 @@ def _select_youtube_results(
 
     _show_yt_results_table(cfg.keyword, results)
 
-    menu = _ask_choice(
-        "How do you want to choose what to download?",
-        ["Fetch ALL matching files", "Choose specific numbers", "Cancel"],
-    )
-    if menu == 1:
-        return results
-    if menu == 3:
-        return None
-
     while True:
-        raw = _ask_text("Enter result numbers (e.g. 1,3,5-8)", allow_empty=False)
+        menu = _ask_choice(
+            "What do you want to do with these results?",
+            [
+                "Fetch ALL matching files",
+                "Choose specific numbers to download",
+                "Play a result (stream without downloading)",
+                "Cancel",
+            ],
+        )
+        if menu == 1:
+            return results
+        if menu == 4:
+            return None
+
+        prompt = (
+            "Enter result numbers (e.g. 1,3,5-8)"
+            if menu == 2
+            else "Enter the result number to play"
+        )
+        raw = _ask_text(prompt, allow_empty=False)
         selected_indexes = _parse_number_list(raw, len(results))
-        if selected_indexes:
+        if not selected_indexes:
+            err_line("No valid numbers entered. Please try again.")
+            continue
+        if menu == 2:
             return [results[i - 1] for i in selected_indexes]
-        err_line("No valid numbers entered. Please try again.")
+        if len(selected_indexes) != 1:
+            err_line("Enter exactly one result number to play.")
+            continue
+        play_video_result(results[selected_indexes[0] - 1], cfg)
 
 
 def _run_youtube_interactive(
@@ -2162,6 +2194,64 @@ def _extract_url_video(
         "thumbnail": info.get("thumbnail")
         or (thumbnails[-1].get("url") if thumbnails else None),
     }
+
+
+def run_url_play_flow(
+    url: Optional[str] = None,
+    expected: Optional[str] = None,
+    cookie_opts: Optional[Dict[str, Any]] = None,
+    format_spec: Optional[str] = None,
+) -> int:
+    """Play a YouTube/TikTok/Facebook link without saving it to disk."""
+    from src import player  # lazy: avoids importing player code for downloads
+    from src.link import detect_platform, validate_url
+
+    effective_cookie_opts = (
+        cookie_opts if cookie_opts is not None else resolve_cookie_options()
+    )
+
+    heading = "Play by Link"
+    if expected == "youtube":
+        heading = "Play by YouTube Link"
+    elif expected in SOCIAL_SOURCES:
+        heading = f"{PLATFORM_LABELS[expected]} Play"
+    console.print(_heading(heading, CYAN))
+    console.print()
+
+    if url:
+        url = url.strip()
+    else:
+        if expected:
+            message = f"Paste the {PLATFORM_LABELS[expected]} video URL"
+        else:
+            message = "Paste the video URL (YouTube, TikTok, or Facebook)"
+        url = _ask_text(message, allow_empty=False)
+
+    platform = detect_platform(url)
+    validation = validate_url(url, expected)
+    if validation:
+        show_error(validation, hint="Paste a supported, publicly accessible video URL.")
+        return 1
+    if platform == "telegram":
+        show_error(
+            "Telegram links cannot be played by URL.",
+            hint='Search Telegram and choose "Play a result" instead.',
+        )
+        return 1
+
+    console.print(Text("Playback mode:", style=BRIGHT))
+    mp3_only = {1: False, 2: True}[
+        _ask_choice("Enter choice:", ["Video", "Audio only (mp3)"])
+    ]
+
+    played = player.play_url(
+        url,
+        f"{PLATFORM_LABELS.get(platform, 'Video')} link",
+        cookie_opts=effective_cookie_opts,
+        mp3_only=mp3_only,
+        format_spec=format_spec,
+    )
+    return 0 if played else 1
 
 
 def run_url_download_flow(
@@ -2373,6 +2463,18 @@ def run_interactive_session(args: argparse.Namespace) -> int:
             )
             console.print()
             return exit_code
+
+        if platform == "play_url":
+            if run_url_play_flow(
+                url=None,
+                expected=None,
+                cookie_opts=resolve_cookie_options(
+                    args.cookiefile, args.cookies_from_browser
+                ),
+                format_spec=args.format_spec,
+            ) != 0:
+                exit_code = 1
+            continue  # back to the platform selection menu
 
         if platform in ("url", "tiktok", "facebook"):
             expected = None if platform == "url" else platform
